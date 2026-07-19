@@ -1,5 +1,5 @@
 import express from 'express';
-import { uploadImage } from '../controllers/mediaController.js';
+import { uploadImage } from '../Controllers/mediaController.js';
 import { auth } from '../Auth/auth.js';
 import { upload } from '../upload.js';
 

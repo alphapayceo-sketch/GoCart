@@ -1,5 +1,5 @@
 import express from 'express';
-import { getStats, getAdminOrders } from '../controllers/adminController.js';
+import { getStats, getAdminOrders } from '../Controllers/adminController.js';
 import { auth, authorize } from '../Auth/auth.js';
 
 const router = express.Router();
