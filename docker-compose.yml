@@ -8,11 +8,9 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgres://user:password@db:5432/ecommerce_db
-      - REDIS_URL=redis://redis:6379
       - JWT_SECRET=your_jwt_secret
     depends_on:
       - db
-      - redis
 
   db:
     image: postgres:16
@@ -22,11 +20,6 @@ services:
       - POSTGRES_DB=ecommerce_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
 
 volumes:
   postgres_data:

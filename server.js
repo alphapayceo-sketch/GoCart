@@ -1,10 +1,7 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import router from './index.js';
 import env from './env.js';
-
-dotenv.config();
 
 const app = express();
 app.use(cors({ origin: true }));
