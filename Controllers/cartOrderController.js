@@ -1,5 +1,6 @@
 import db from '../config/db.js';
 import logger from '../logger.js';
+import { emitOrderUpdate, emitNotification } from '../socket.js';
 
 // Cart Controllers
 export const getCart = async (req, res) => {
@@ -135,6 +136,16 @@ export const createOrder = async (req, res) => {
     await trx('cart_items').where({ cart_id: cart.id }).del();
 
     await trx.commit();
+
+    emitOrderUpdate(order.id, 'pending');
+    emitNotification({
+      title: 'Order placed',
+      message: `Your order #${order.id} has been placed successfully.`,
+      orderId: order.id,
+      status: 'pending',
+      timestamp: new Date().toISOString(),
+    });
+
     res.status(201).json({ message: 'Order placed successfully', order });
   } catch (err) {
     await trx.rollback();
