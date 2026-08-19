@@ -1,9 +1,11 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import db from '../config/db.js';
+import { normalizeRole } from '../Auth/auth.js';
 
 export const signup = async (req, res) => {
-  const { email, password, first_name, last_name, phone_number } = req.body;
+  const { email, password, first_name, last_name, phone_number, role } = req.body;
+  const normalizedRole = normalizeRole(role || 'customer');
 
   try {
     const userExists = await db('users').where({ email }).first();
@@ -19,10 +21,10 @@ export const signup = async (req, res) => {
       password_hash,
       first_name,
       last_name,
-      phone_number
-    }).returning(['id', 'email', 'first_name', 'last_name']);
+      phone_number,
+      role: normalizedRole
+    }).returning(['id', 'email', 'first_name', 'last_name', 'role']);
 
-    // Create a cart for the new user
     await db('carts').insert({ user_id: user.id });
 
     const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
@@ -66,6 +68,8 @@ export const login = async (req, res) => {
         email: user.email,
         first_name: user.first_name,
         last_name: user.last_name,
+        phone_number: user.phone_number,
+        image_url: user.image_url,
         role: user.role
       }
     });

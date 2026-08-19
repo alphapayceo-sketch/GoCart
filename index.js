@@ -6,6 +6,8 @@ import userRoutes from './Routes/userRoutes.js';
 import extraRoutes from './Routes/extraRoutes.js';
 import mediaRoutes from './Routes/mediaRoutes.js';
 import adminRoutes from './Routes/adminRoutes.js';
+import merchantRoutes from './Routes/merchantRoutes.js';
+import momoRoutes from './Routes/momoRoutes.js';
 
 const router = express.Router();
 
@@ -16,5 +18,7 @@ router.use('/users', userRoutes);
 router.use('/', extraRoutes);
 router.use('/media', mediaRoutes);
 router.use('/admin', adminRoutes);
+router.use('/merchant', merchantRoutes);
+router.use('/momo', momoRoutes);
 
 export default router;

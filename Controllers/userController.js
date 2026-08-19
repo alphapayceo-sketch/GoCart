@@ -75,3 +75,39 @@ export const deleteAddress = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+export const updateProfile = async (req, res) => {
+  const { first_name, last_name, phone_number, email, image_url } = req.body;
+  const payload = {
+    first_name,
+    last_name,
+    phone_number,
+  };
+
+  if (email) {
+    payload.email = email;
+  }
+
+  if (image_url) {
+    payload.image_url = image_url;
+  }
+
+  try {
+    const [user] = await db('users')
+      .where({ id: req.user.id })
+      .update(payload)
+      .returning('*');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    delete user.password_hash;
+    res.json(user);
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(400).json({ message: 'Email or phone number already in use' });
+    }
+    res.status(500).json({ message: 'Server error' });
+  }
+};

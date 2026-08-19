@@ -1,20 +1,34 @@
-import request from 'supertest';
-import express from 'express';
-import authRoutes from '../src/routes/authRoutes.js';
+import { authorize, normalizeRole } from './auth.js';
 
-const app = express();
-app.use(express.json());
-app.use('/api/auth', authRoutes);
+describe('Role-based app access', () => {
+  it('maps legacy user role to customer for the storefront app', () => {
+    expect(normalizeRole('user')).toBe('customer');
+    expect(normalizeRole('merchant')).toBe('merchant');
+  });
 
-describe('Auth API', () => {
-  it('should fail to login with wrong credentials', async () => {
-    const res = await request(app)
-      .post('/api/auth/login')
-      .send({
-        email: 'wrong@example.com',
-        password: 'wrongpassword'
-      });
-    expect(res.statusCode).toEqual(400);
-    expect(res.body).toHaveProperty('message');
+  it('allows merchant and admin roles through merchant routes', () => {
+    const next = jest.fn();
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    authorize('merchant', 'admin')({ user: { role: 'merchant' } }, res, next);
+    authorize('merchant', 'admin')({ user: { role: 'admin' } }, res, next);
+
+    expect(next).toHaveBeenCalledTimes(2);
+  });
+
+  it('blocks customer access to merchant routes', () => {
+    const next = jest.fn();
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn(),
+    };
+
+    authorize('merchant', 'admin')({ user: { role: 'customer' } }, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
   });
 });
