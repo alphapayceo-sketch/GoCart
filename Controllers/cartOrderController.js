@@ -13,7 +13,7 @@ export const getCart = async (req, res) => {
     const items = await db('cart_items')
       .where({ cart_id: cart.id })
       .join('products', 'cart_items.product_id', '=', 'products.id')
-      .select('cart_items.*', 'products.name', 'products.price', 'products.image_urls');
+      .select('cart_items.*', 'products.name', 'products.price', 'products.image_urls', 'products.tenant_id');
 
     res.json({ ...cart, items });
   } catch (err) {
@@ -27,7 +27,19 @@ export const addToCart = async (req, res) => {
 
   try {
     const cart = await db('carts').where({ user_id: req.user.id }).first();
-    
+    if (!cart) return res.status(404).json({ message: 'Cart not found' });
+
+    // Validate product tenant matches cart tenant (if cart.tenant_id set)
+    const product = await db('products').where({ id: product_id }).first();
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+    if (cart.tenant_id && product.tenant_id && String(cart.tenant_id) !== String(product.tenant_id)) {
+      return res.status(400).json({ message: 'Cannot add product from different store to this cart' });
+    }
+    // If cart has no tenant, set it to product's tenant
+    if (!cart.tenant_id && product.tenant_id) {
+      await db('carts').where({ id: cart.id }).update({ tenant_id: product.tenant_id });
+    }
+
     // Check if item already exists in cart
     const existingItem = await db('cart_items')
       .where({ cart_id: cart.id, product_id, variant_id })
@@ -93,7 +105,7 @@ export const createOrder = async (req, res) => {
     const cartItems = await trx('cart_items')
       .where({ cart_id: cart.id })
       .join('products', 'cart_items.product_id', '=', 'products.id')
-      .select('cart_items.*', 'products.price', 'products.stock_quantity');
+      .select('cart_items.*', 'products.price', 'products.stock_quantity', 'products.tenant_id');
 
     if (cartItems.length === 0) {
       await trx.rollback();
@@ -102,24 +114,48 @@ export const createOrder = async (req, res) => {
 
     // Check stock and calculate total
     let totalAmount = 0;
+
+    // Ensure all items belong to same tenant
+    const tenantSet = new Set(cartItems.map(i => i.tenant_id || null));
+    if (tenantSet.size > 1) {
+      await trx.rollback();
+      return res.status(400).json({ message: 'Cart contains products from multiple stores. Please checkout per store.' });
+    }
+    const orderTenantId = cartItems[0] ? cartItems[0].tenant_id : null;
+
     for (const item of cartItems) {
-      if (item.stock_quantity < item.quantity) {
+      // if variant present, check variant stock
+      if (item.variant_id) {
+        const variant = await trx('product_variants').where({ id: item.variant_id }).first();
+        if (!variant || variant.stock_quantity < item.quantity) {
+          await trx.rollback();
+          return res.status(400).json({ message: `Insufficient stock for variant ${item.variant_id}` });
+        }
+      } else if (item.stock_quantity < item.quantity) {
         await trx.rollback();
         return res.status(400).json({ message: `Insufficient stock for product ${item.product_id}` });
       }
+
       totalAmount += item.price * item.quantity;
-      
-      // Reduce stock
-      await trx('products')
-        .where({ id: item.product_id })
-        .decrement('stock_quantity', item.quantity);
+
+      // Reduce stock by variant or product
+      if (item.variant_id) {
+        await trx('product_variants')
+          .where({ id: item.variant_id })
+          .decrement('stock_quantity', item.quantity);
+      } else {
+        await trx('products')
+          .where({ id: item.product_id })
+          .decrement('stock_quantity', item.quantity);
+      }
     }
 
     const [order] = await trx('orders').insert({
       user_id: req.user.id,
       shipping_address_id,
       total_amount: totalAmount,
-      status: 'pending'
+      status: 'pending',
+      tenant_id: orderTenantId
     }).returning('*');
 
     const orderItems = cartItems.map(item => ({

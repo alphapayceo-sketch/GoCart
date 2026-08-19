@@ -7,6 +7,11 @@ export const getProducts = async (req, res) => {
   try {
     let query = db('products').select('*');
 
+    // If tenant context is present, scope results to tenant
+    if (req.tenantId) {
+      query = query.where({ tenant_id: req.tenantId });
+    }
+
     if (category_id) {
       query = query.where({ category_id });
     }
@@ -43,7 +48,9 @@ export const getProductById = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const product = await db('products').where({ id }).first();
+    const q = db('products').where({ id });
+    if (req.tenantId) q.andWhere({ tenant_id: req.tenantId });
+    const product = await q.first();
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }

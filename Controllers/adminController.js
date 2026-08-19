@@ -5,10 +5,12 @@ import { Category } from '../Models/Category.js';
 
 export const getStats = async (req, res) => {
   try {
-    const totalSales = await db('orders').where({ status: 'paid' }).sum('total_amount as total');
-    const orderCount = await db('orders').count('id as count');
+    // Optionally scope stats to tenant
+    const orderWhere = req.tenantId ? { status: 'paid', tenant_id: req.tenantId } : { status: 'paid' };
+    const totalSales = await db('orders').where(orderWhere).sum('total_amount as total');
+    const orderCount = await db('orders').where(req.tenantId ? { tenant_id: req.tenantId } : {}).count('id as count');
     const userCount = await db('users').count('id as count');
-    const productCount = await db('products').count('id as count');
+    const productCount = await db('products').where(req.tenantId ? { tenant_id: req.tenantId } : {}).count('id as count');
 
     res.json({
       total_revenue: parseFloat(totalSales[0].total || 0),
@@ -23,10 +25,13 @@ export const getStats = async (req, res) => {
 
 export const getAdminOrders = async (req, res) => {
   try {
-    const orders = await db('orders')
+    let query = db('orders')
       .join('users', 'orders.user_id', '=', 'users.id')
       .select('orders.*', 'users.email', 'users.first_name', 'users.last_name')
       .orderBy('created_at', 'desc');
+
+    if (req.tenantId) query = query.where('orders.tenant_id', req.tenantId);
+    const orders = await query;
     res.json(orders);
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch orders' });
@@ -42,6 +47,9 @@ export const getAdminProducts = async (req, res) => {
         'categories.name as category_name',
       )
       .orderBy('products.created_at', 'desc');
+
+    // scope to tenant when present
+    const filtered = req.tenantId ? rows.filter(r => r.tenant_id === req.tenantId) : rows;
 
     const products = rows.map(row => Product.fromDb(row));
     res.json(products);
@@ -85,7 +93,8 @@ export const createProduct = async (req, res) => {
         discount_percent: Number.isNaN(parsedDiscountPercent) ? null : parsedDiscountPercent,
         image_urls: imageUrls,
         category_id: category_id || null,
-        stock_quantity: Number.isNaN(parsedStockQuantity) ? 0 : parsedStockQuantity
+        stock_quantity: Number.isNaN(parsedStockQuantity) ? 0 : parsedStockQuantity,
+        tenant_id: req.tenantId || null
       })
       .returning('*');
 
@@ -138,7 +147,7 @@ export const updateProduct = async (req, res) => {
     }
 
     const [product] = await db('products')
-      .where({ id })
+      .where(req.tenantId ? { id, tenant_id: req.tenantId } : { id })
       .update(updateData)
       .returning('*');
 
@@ -157,7 +166,7 @@ export const deleteProduct = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const deletedCount = await db('products').where({ id }).del();
+    const deletedCount = await db('products').where(req.tenantId ? { id, tenant_id: req.tenantId } : { id }).del();
     if (!deletedCount) {
       return res.status(404).json({ message: 'Product not found' });
     }
