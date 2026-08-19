@@ -4,6 +4,12 @@ import db from '../config/db.js';
 export const getProductReviews = async (req, res) => {
   const { product_id } = req.params;
   try {
+    // If tenant context provided, ensure product belongs to tenant
+    if (req.tenantId) {
+      const p = await db('products').where({ id: product_id, tenant_id: req.tenantId }).first();
+      if (!p) return res.status(404).json({ message: 'Product not found for this store' });
+    }
+
     const reviews = await db('reviews')
       .where({ product_id })
       .join('users', 'reviews.user_id', '=', 'users.id')
@@ -19,6 +25,11 @@ export const addReview = async (req, res) => {
   const { product_id } = req.params;
   const { rating, comment } = req.body;
   try {
+    if (req.tenantId) {
+      const p = await db('products').where({ id: product_id, tenant_id: req.tenantId }).first();
+      if (!p) return res.status(404).json({ message: 'Product not found for this store' });
+    }
+
     const [review] = await db('reviews').insert({
       product_id,
       user_id: req.user.id,
@@ -34,10 +45,12 @@ export const addReview = async (req, res) => {
 // Wishlist Controllers
 export const getWishlist = async (req, res) => {
   try {
-    const wishlist = await db('wishlists')
+    let query = db('wishlists')
       .where({ user_id: req.user.id })
       .join('products', 'wishlists.product_id', '=', 'products.id')
       .select('wishlists.*', 'products.name', 'products.price', 'products.image_urls');
+    if (req.tenantId) query = query.where('products.tenant_id', req.tenantId);
+    const wishlist = await query;
     res.json(wishlist);
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
@@ -47,6 +60,13 @@ export const getWishlist = async (req, res) => {
 export const addToWishlist = async (req, res) => {
   const { product_id } = req.body;
   try {
+    // Ensure product exists and matches tenant when tenant context provided
+    const product = await db('products').where({ id: product_id }).first();
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+    if (req.tenantId && String(product.tenant_id) !== String(req.tenantId)) {
+      return res.status(400).json({ message: 'Product does not belong to this store' });
+    }
+
     const existing = await db('wishlists').where({ user_id: req.user.id, product_id }).first();
     if (existing) {
       return res.status(400).json({ message: 'Product already in wishlist' });

@@ -49,9 +49,9 @@ export const getAdminProducts = async (req, res) => {
       .orderBy('products.created_at', 'desc');
 
     // scope to tenant when present
-    const filtered = req.tenantId ? rows.filter(r => r.tenant_id === req.tenantId) : rows;
+    const filtered = req.tenantId ? rows.filter(r => String(r.tenant_id) === String(req.tenantId)) : rows;
 
-    const products = rows.map(row => Product.fromDb(row));
+    const products = filtered.map(row => Product.fromDb(row));
     res.json(products);
   } catch (err) {
     logger.error('Failed to fetch admin products:', err);
