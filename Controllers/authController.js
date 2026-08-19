@@ -27,7 +27,7 @@ export const signup = async (req, res) => {
 
     await db('carts').insert({ user_id: user.id });
 
-    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
     res.status(201).json({ token, user });
   } catch (err) {
@@ -50,7 +50,7 @@ export const login = async (req, res) => {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
 
-    const accessToken = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '15m' });
+    const accessToken = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '15m' });
     const refreshToken = jwt.sign({ id: user.id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 
     // Store refresh token
@@ -91,10 +91,25 @@ export const refresh = async (req, res) => {
       return res.status(401).json({ message: 'Invalid or expired refresh token' });
     }
 
-    const accessToken = jwt.sign({ id: decoded.id }, process.env.JWT_SECRET, { expiresIn: '15m' });
+    // include current role in new access token
+    const user = await db('users').where({ id: decoded.id }).first();
+    const accessToken = jwt.sign({ id: decoded.id, role: user ? user.role : undefined }, process.env.JWT_SECRET, { expiresIn: '15m' });
     res.json({ accessToken });
   } catch (err) {
     res.status(401).json({ message: 'Invalid refresh token' });
+  }
+};
+
+export const logout = async (req, res) => {
+  const { refreshToken } = req.body;
+  if (!refreshToken) return res.status(400).json({ message: 'Refresh token required' });
+
+  try {
+    const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
+    await db('refresh_tokens').where({ token: refreshToken, user_id: decoded.id }).del();
+    res.json({ message: 'Logged out' });
+  } catch (err) {
+    res.status(400).json({ message: 'Invalid token' });
   }
 };
 
