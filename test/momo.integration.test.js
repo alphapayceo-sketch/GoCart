@@ -9,7 +9,10 @@ const app = express();
 app.use(express.json());
 app.use('/api', appModule);
 
-describe('MTN MoMo integration', () => {
+const runDbIntegration = process.env.RUN_DB_INTEGRATION_TESTS === 'true';
+const describeIfDb = runDbIntegration ? describe : describe.skip;
+
+describeIfDb('MTN MoMo integration', () => {
   let tenantId;
   beforeAll(async () => {
     const tenant = await db('tenants').where({ slug: 'test-tenant' }).first();

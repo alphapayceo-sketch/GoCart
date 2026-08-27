@@ -6,25 +6,27 @@ dotenv.config();
 
 const environment = process.env.NODE_ENV || 'development';
 
-let db;
+const createFallbackDb = () => {
+  const fakeDb = (table) => {
+    const chain = {
+      where() { return chain; },
+      whereNull() { return chain; },
+      first: async () => undefined,
+      insert: async () => [],
+      returning() { return chain; },
+      then: undefined,
+      catch: undefined,
+    };
+    return chain;
+  };
 
-if (environment === 'test') {
-	// Minimal stub for tests: supports chained calls used by controllers.
-	const fakeDb = (table) => {
-		const chain = {
-			where() { return chain; },
-			whereNull() { return chain; },
-			first: async () => undefined,
-			insert: async () => [],
-			returning() { return chain; }
-		};
-		return chain;
-	};
+  return Object.assign(fakeDb, {
+    destroy: async () => undefined,
+    raw: async () => undefined,
+  });
+};
 
-	db = (table) => fakeDb(table);
-} else {
-	const config = knexConfig[environment] || knexConfig.development;
-	db = knex(config);
-}
+const config = knexConfig[environment] || knexConfig.development;
+const db = environment === 'test' && !process.env.DATABASE_URL ? createFallbackDb() : knex(config);
 
 export default db;

@@ -16,6 +16,10 @@ export async function tenantMiddleware(req, res, next) {
     const tenant = await db('tenants').where({ id: tenantId }).first();
     if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
+    if (req.user && req.user.tenant_id && String(req.user.tenant_id) !== String(tenantId)) {
+      return res.status(403).json({ error: 'User does not belong to this tenant' });
+    }
+
     req.tenantId = tenantId;
     req.tenant = tenant;
     return next();

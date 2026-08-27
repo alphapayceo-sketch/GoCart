@@ -1,16 +1,17 @@
 import express from 'express';
 import { tenantMiddleware } from '../src_js/middleware/tenantMiddleware.js';
+import { auth } from '../Auth/auth.js';
 import mtnService from '../src_js/fintech/mtnMockService.js';
 
 const router = express.Router();
 
-router.post('/initiate', tenantMiddleware, async (req, res) => {
+router.post('/initiate', auth, tenantMiddleware, async (req, res) => {
   try {
     const tenantId = req.tenantId;
-    const { mobile, amountCents, externalRef } = req.body;
+    const { mobile, amountCents, externalRef, orderId } = req.body;
     if (!mobile || !amountCents) return res.status(400).json({ error: 'mobile and amountCents required' });
     const ref = externalRef || `order_${Date.now()}`;
-    const result = await mtnService.initiateCollection(tenantId, mobile, Number(amountCents), ref);
+    const result = await mtnService.initiateCollection(tenantId, mobile, Number(amountCents), ref, orderId);
     return res.json({ ok: true, result });
   } catch (err) {
     console.error('momo initiate error', err);

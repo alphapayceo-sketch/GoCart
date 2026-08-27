@@ -61,11 +61,10 @@ export const addToWishlist = async (req, res) => {
   const { product_id } = req.body;
   try {
     // Ensure product exists and matches tenant when tenant context provided
-    const product = await db('products').where({ id: product_id }).first();
+    const productQuery = db('products').where({ id: product_id });
+    if (req.tenantId) productQuery.andWhere({ tenant_id: req.tenantId });
+    const product = await productQuery.first();
     if (!product) return res.status(404).json({ message: 'Product not found' });
-    if (req.tenantId && String(product.tenant_id) !== String(req.tenantId)) {
-      return res.status(400).json({ message: 'Product does not belong to this store' });
-    }
 
     const existing = await db('wishlists').where({ user_id: req.user.id, product_id }).first();
     if (existing) {

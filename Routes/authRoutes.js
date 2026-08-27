@@ -1,5 +1,5 @@
 import express from 'express';
-import { signup, login, refresh, forgotPassword, resetPassword, logout } from '../Controllers/authController.js';
+import { signup, login, refresh, forgotPassword, verifyOtp, resendOtp, resetPassword, logout, verifyEmail, resendVerification } from '../Controllers/authController.js';
 import { validateSignup, validateLogin } from '../Validation/validation.js';
 
 const router = express.Router();
@@ -27,6 +27,8 @@ const router = express.Router();
  *         description: User created successfully
  */
 router.post('/signup', validateSignup, signup);
+router.post('/verify-email', verifyEmail);
+router.post('/resend-verification', resendVerification);
 
 /**
  * @swagger
@@ -51,6 +53,8 @@ router.post('/login', validateLogin, login);
 router.post('/refresh', refresh);
 
 router.post('/forgot-password', forgotPassword);
+router.post('/verify-otp', verifyOtp);
+router.post('/resend-otp', resendOtp);
 router.post('/reset-password', resetPassword);
 router.post('/logout', logout);
 

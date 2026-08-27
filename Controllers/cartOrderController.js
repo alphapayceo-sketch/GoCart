@@ -10,6 +10,11 @@ export const getCart = async (req, res) => {
       return res.status(404).json({ message: 'Cart not found' });
     }
 
+    // If request is tenant-scoped, ensure the cart belongs to that tenant
+    if (req.tenantId && cart.tenant_id && String(cart.tenant_id) !== String(req.tenantId)) {
+      return res.status(404).json({ message: 'Cart not found for this store' });
+    }
+
     const items = await db('cart_items')
       .where({ cart_id: cart.id })
       .join('products', 'cart_items.product_id', '=', 'products.id')
@@ -32,6 +37,10 @@ export const addToCart = async (req, res) => {
     // Validate product tenant matches cart tenant (if cart.tenant_id set)
     const product = await db('products').where({ id: product_id }).first();
     if (!product) return res.status(404).json({ message: 'Product not found' });
+    // If request is tenant-scoped, ensure the product belongs to that tenant
+    if (req.tenantId && product.tenant_id && String(product.tenant_id) !== String(req.tenantId)) {
+      return res.status(400).json({ message: 'Product does not belong to this store' });
+    }
     if (cart.tenant_id && product.tenant_id && String(cart.tenant_id) !== String(product.tenant_id)) {
       return res.status(400).json({ message: 'Cannot add product from different store to this cart' });
     }
@@ -70,6 +79,10 @@ export const updateCartItem = async (req, res) => {
   const { quantity } = req.body;
   try {
     const cart = await db('carts').where({ user_id: req.user.id }).first();
+    if (!cart) return res.status(404).json({ message: 'Cart not found' });
+    if (req.tenantId && cart.tenant_id && String(cart.tenant_id) !== String(req.tenantId)) {
+      return res.status(404).json({ message: 'Cart not found for this store' });
+    }
     const updated = await db('cart_items')
       .where({ id, cart_id: cart.id })
       .update({ quantity });
@@ -84,6 +97,10 @@ export const deleteCartItem = async (req, res) => {
   const { id } = req.params;
   try {
     const cart = await db('carts').where({ user_id: req.user.id }).first();
+    if (!cart) return res.status(404).json({ message: 'Cart not found' });
+    if (req.tenantId && cart.tenant_id && String(cart.tenant_id) !== String(req.tenantId)) {
+      return res.status(404).json({ message: 'Cart not found for this store' });
+    }
     const deleted = await db('cart_items')
       .where({ id, cart_id: cart.id })
       .del();
@@ -96,12 +113,20 @@ export const deleteCartItem = async (req, res) => {
 
 // Order Controllers
 export const createOrder = async (req, res) => {
-  const { shipping_address_id } = req.body;
+  const { shipping_address_id, shipping_method, shipping_amount = 0, payment_method, points_used = 0, promo_code, promo_discount = 0 } = req.body;
 
   const trx = await db.transaction();
 
   try {
     const cart = await trx('carts').where({ user_id: req.user.id }).first();
+    if (!cart) {
+      await trx.rollback();
+      return res.status(404).json({ message: 'Cart not found' });
+    }
+    if (req.tenantId && cart.tenant_id && String(cart.tenant_id) !== String(req.tenantId)) {
+      await trx.rollback();
+      return res.status(404).json({ message: 'Cart not found for this store' });
+    }
     const cartItems = await trx('cart_items')
       .where({ cart_id: cart.id })
       .join('products', 'cart_items.product_id', '=', 'products.id')
@@ -121,7 +146,9 @@ export const createOrder = async (req, res) => {
       await trx.rollback();
       return res.status(400).json({ message: 'Cart contains products from multiple stores. Please checkout per store.' });
     }
-    const orderTenantId = cartItems[0] ? cartItems[0].tenant_id : null;
+    // Resolve tenant for this order: prefer tenant from items, fall back to request tenant
+    let orderTenantId = cartItems[0] ? cartItems[0].tenant_id : null;
+    if (!orderTenantId && req.tenantId) orderTenantId = req.tenantId;
 
     for (const item of cartItems) {
       // if variant present, check variant stock
@@ -150,12 +177,31 @@ export const createOrder = async (req, res) => {
       }
     }
 
+    const requestedPoints = Math.max(Number(points_used) || 0, 0);
+    const pointsRows = requestedPoints > 0
+      ? await trx('loyalty_points').where({ user_id: req.user.id }).modify((query) => {
+        if (req.tenantId) query.where({ tenant_id: req.tenantId });
+      })
+      : [];
+    const availablePoints = pointsRows.reduce((sum, row) => sum + Number(row.points || 0), 0);
+    const pointsUsed = Math.min(requestedPoints, Math.max(availablePoints, 0));
+    const discountAmount = pointsUsed;
+    const promoDiscount = Math.max(Number(promo_discount) || 0, 0);
+    totalAmount = Math.max(totalAmount + Number(shipping_amount || 0) - discountAmount - promoDiscount, 0);
+
     const [order] = await trx('orders').insert({
       user_id: req.user.id,
       shipping_address_id,
       total_amount: totalAmount,
       status: 'pending',
-      tenant_id: orderTenantId
+      tenant_id: orderTenantId,
+      shipping_method,
+      shipping_amount: Number(shipping_amount || 0),
+      payment_method,
+      points_used: pointsUsed,
+      discount_amount: discountAmount,
+      promo_code,
+      promo_discount: promoDiscount,
     }).returning('*');
 
     const orderItems = cartItems.map(item => ({
@@ -167,6 +213,17 @@ export const createOrder = async (req, res) => {
     }));
 
     await trx('order_items').insert(orderItems);
+
+    if (pointsUsed > 0) {
+      await trx('loyalty_redemptions').insert({
+        user_id: req.user.id,
+        tenant_id: orderTenantId,
+        points_used: pointsUsed,
+        discount_amount: discountAmount,
+        order_id: order.id,
+        status: 'applied',
+      });
+    }
 
     // Clear cart
     await trx('cart_items').where({ cart_id: cart.id }).del();
@@ -192,7 +249,9 @@ export const createOrder = async (req, res) => {
 
 export const getOrders = async (req, res) => {
   try {
-    const orders = await db('orders').where({ user_id: req.user.id }).orderBy('created_at', 'desc');
+    let ordersQuery = db('orders').where({ user_id: req.user.id });
+    if (req.tenantId) ordersQuery = ordersQuery.andWhere({ tenant_id: req.tenantId });
+    const orders = await ordersQuery.orderBy('created_at', 'desc');
     
     // For each order, get items
     const ordersWithItems = await Promise.all(orders.map(async (order) => {

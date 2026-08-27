@@ -18,6 +18,15 @@ export default async function ensureMerchantForStore(req, res, next) {
     const merchant = await db('merchants').where({ user_id: user.id }).first();
     if (!merchant) return res.status(403).json({ message: 'Merchant profile not found' });
 
+    const merchantStatus = String(merchant.status || 'pending').toLowerCase();
+    if (!['approved', 'active'].includes(merchantStatus)) {
+      return res.status(403).json({
+        message: 'Merchant account is awaiting approval',
+        code: 'MERCHANT_PENDING_APPROVAL',
+        status: merchantStatus,
+      });
+    }
+
     const mapping = await db('merchant_stores').where({ merchant_id: merchant.merchant_id, tenant_id: tenantId }).first();
     if (!mapping) return res.status(403).json({ message: 'Merchant does not manage this store' });
 

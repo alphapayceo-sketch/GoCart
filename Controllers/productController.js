@@ -2,7 +2,7 @@ import db from '../config/db.js';
 import logger from '../logger.js';
 
 export const getProducts = async (req, res) => {
-  const { category_id, search, sort_by, limit = 10, offset = 0 } = req.query;
+  const { category_id, brand_name, search, sort_by, limit = 10, offset = 0 } = req.query;
 
   try {
     let query = db('products').select('*');
@@ -14,6 +14,10 @@ export const getProducts = async (req, res) => {
 
     if (category_id) {
       query = query.where({ category_id });
+    }
+
+    if (brand_name) {
+      query = query.where('brand_name', brand_name);
     }
 
     if (search) {

@@ -2,10 +2,31 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import db from '../config/db.js';
 import { normalizeRole } from '../Auth/auth.js';
+import crypto from 'crypto';
+import { sendEmail } from '../email.js';
+
+const createVerificationCode = () => String(crypto.randomInt(100000, 1000000));
+const hashVerificationCode = (code) => crypto.createHash('sha256').update(code).digest('hex');
+
+const sendVerificationCode = async (user) => {
+  const code = createVerificationCode();
+  await db('users').where({ id: user.id }).update({
+    email_verification_code_hash: hashVerificationCode(code),
+    email_verification_expires_at: new Date(Date.now() + 15 * 60 * 1000),
+  });
+  await sendEmail({
+    email: user.email,
+    subject: 'Verify your GoCart email',
+    message: `Your GoCart verification code is ${code}. It expires in 15 minutes.`,
+  });
+};
 
 export const signup = async (req, res) => {
   const { email, password, first_name, last_name, phone_number, role } = req.body;
   const normalizedRole = normalizeRole(role || 'customer');
+  if (!['customer', 'merchant'].includes(normalizedRole)) {
+    return res.status(400).json({ message: 'Only customer or merchant signup is allowed' });
+  }
 
   try {
     const userExists = await db('users').where({ email }).first();
@@ -25,7 +46,9 @@ export const signup = async (req, res) => {
       role: normalizedRole
     }).returning(['id', 'email', 'first_name', 'last_name', 'role']);
 
-    await db('carts').insert({ user_id: user.id });
+    // Create an empty cart for the user and attach tenant if present
+    await db('carts').insert({ user_id: user.id, ...(req.tenantId ? { tenant_id: req.tenantId } : {}) });
+    await sendVerificationCode(user);
 
     const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
@@ -33,6 +56,51 @@ export const signup = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const verifyEmail = async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const code = String(req.body?.code || '').trim();
+  if (!email || !/^\d{6}$/.test(code)) {
+    return res.status(400).json({ message: 'Email and six-digit verification code are required' });
+  }
+
+  try {
+    const user = await db('users').where({ email }).first();
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.email_verified_at) return res.json({ message: 'Email already verified', verified: true });
+    if (!user.email_verification_expires_at || new Date(user.email_verification_expires_at) < new Date()) {
+      return res.status(400).json({ message: 'Verification code expired' });
+    }
+    if (hashVerificationCode(code) !== user.email_verification_code_hash) {
+      return res.status(400).json({ message: 'Invalid verification code' });
+    }
+
+    await db('users').where({ id: user.id }).update({
+      email_verified_at: db.fn.now(),
+      email_verification_code_hash: null,
+      email_verification_expires_at: null,
+    });
+    return res.json({ message: 'Email verified successfully', verified: true });
+  } catch (error) {
+    console.error('Email verification failed:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const resendVerification = async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ message: 'Email is required' });
+  try {
+    const user = await db('users').where({ email }).first();
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.email_verified_at) return res.json({ message: 'Email already verified', verified: true });
+    await sendVerificationCode(user);
+    return res.json({ message: 'Verification code sent' });
+  } catch (error) {
+    console.error('Verification resend failed:', error);
+    return res.status(500).json({ message: 'Server error' });
   }
 };
 
@@ -48,6 +116,10 @@ export const login = async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid credentials' });
+    }
+
+    if (normalizeRole(user.role) === 'merchant' && !user.email_verified_at) {
+      return res.status(403).json({ message: 'Please verify your email before merchant access', code: 'EMAIL_NOT_VERIFIED' });
     }
 
     const accessToken = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '15m' });
@@ -119,23 +191,65 @@ export const forgotPassword = async (req, res) => {
     const user = await db('users').where({ email }).first();
     if (!user) return res.status(404).json({ message: 'User not found' });
     
-    // In a real app, send email with token. Here we just return success.
+    const code = String(crypto.randomInt(1000, 10000));
+    const codeHash = crypto.createHash('sha256').update(code).digest('hex');
+    await db('password_reset_otps').where({ user_id: user.id, used_at: null }).update({ used_at: new Date() });
+    await db('password_reset_otps').insert({
+      user_id: user.id,
+      email: user.email,
+      code_hash: codeHash,
+      expires_at: new Date(Date.now() + 10 * 60 * 1000),
+    });
+    await sendEmail({
+      email: user.email,
+      subject: 'Your password reset code',
+      message: `Your password reset code is ${code}. It expires in 10 minutes.`,
+    });
     res.json({ message: 'Password reset link sent to your email' });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
 };
 
+export const verifyOtp = async (req, res) => {
+  const { email, code } = req.body;
+  try {
+    const otp = await db('password_reset_otps')
+      .where({ email, used_at: null })
+      .where('expires_at', '>', new Date())
+      .orderBy('created_at', 'desc')
+      .first();
+    if (!otp || otp.attempts >= 5) return res.status(400).json({ message: 'Invalid or expired code' });
+    const codeHash = crypto.createHash('sha256').update(String(code || '')).digest('hex');
+    if (codeHash !== otp.code_hash) {
+      await db('password_reset_otps').where({ id: otp.id }).increment('attempts', 1);
+      return res.status(400).json({ message: 'Invalid or expired code' });
+    }
+    await db('password_reset_otps').where({ id: otp.id }).update({ used_at: new Date() });
+    const resetToken = jwt.sign({ id: otp.user_id, purpose: 'password-reset' }, process.env.JWT_SECRET, { expiresIn: '15m' });
+    return res.json({ message: 'Code verified successfully', resetToken });
+  } catch (err) {
+    console.error('OTP verification failed', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+export const resendOtp = async (req, res) => {
+  return forgotPassword(req, res);
+};
+
 export const resetPassword = async (req, res) => {
   const { token, new_password } = req.body;
   try {
-    // In a real app, verify token. Here we assume it's valid for demo.
-    // const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    // const user_id = decoded.id;
-    
-    // For demo, we'll just return success.
+    if (!token || !new_password || String(new_password).length < 8) {
+      return res.status(400).json({ message: 'Token and a password of at least 8 characters are required' });
+    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (decoded.purpose !== 'password-reset') return res.status(401).json({ message: 'Invalid reset token' });
+    const password_hash = await bcrypt.hash(new_password, 10);
+    await db('users').where({ id: decoded.id }).update({ password_hash });
     res.json({ message: 'Password has been reset successfully' });
   } catch (err) {
-    res.status(500).json({ message: 'Server error' });
+    res.status(401).json({ message: 'Invalid or expired reset token' });
   }
 };

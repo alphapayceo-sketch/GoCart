@@ -40,7 +40,7 @@ export const getAdminOrders = async (req, res) => {
 
 export const getAdminProducts = async (req, res) => {
   try {
-    const rows = await db('products')
+    let query = db('products')
       .leftJoin('categories', 'products.category_id', 'categories.id')
       .select(
         'products.*',
@@ -48,10 +48,10 @@ export const getAdminProducts = async (req, res) => {
       )
       .orderBy('products.created_at', 'desc');
 
-    // scope to tenant when present
-    const filtered = req.tenantId ? rows.filter(r => String(r.tenant_id) === String(req.tenantId)) : rows;
+    if (req.tenantId) query = query.where('products.tenant_id', req.tenantId);
 
-    const products = filtered.map(row => Product.fromDb(row));
+    const rows = await query;
+    const products = rows.map(row => Product.fromDb(row));
     res.json(products);
   } catch (err) {
     logger.error('Failed to fetch admin products:', err);
@@ -180,7 +180,9 @@ export const deleteProduct = async (req, res) => {
 
 export const getAdminCategories = async (req, res) => {
   try {
-    const categories = await db('categories').select('*');
+    let query = db('categories').select('*');
+    if (req.tenantId) query = query.where((builder) => builder.where('tenant_id', req.tenantId).orWhereNull('tenant_id'));
+    const categories = await query;
     res.json(categories);
   } catch (err) {
     logger.error('Failed to fetch admin categories:', err);
@@ -201,7 +203,8 @@ export const createCategory = async (req, res) => {
         name,
         image_url: image_url || null,
         svg_src: svg_src || null,
-        parent_id: parent_id || null
+        parent_id: parent_id || null,
+        tenant_id: req.tenantId || null,
       })
       .returning('*');
 
@@ -221,8 +224,9 @@ export const updateCategory = async (req, res) => {
   }
 
   try {
-    const [category] = await db('categories')
-      .where({ id })
+    let query = db('categories').where({ id });
+    if (req.tenantId) query = query.where({ tenant_id: req.tenantId });
+    const [category] = await query
       .update({
         name,
         image_url: image_url || null,
@@ -243,11 +247,33 @@ export const updateCategory = async (req, res) => {
   }
 };
 
+export const updateCategoryImage = async (req, res) => {
+  const { id } = req.params;
+  const imageUrl = req.file?.path;
+  if (!imageUrl) return res.status(400).json({ message: 'Category image is required' });
+
+  try {
+    const categoryQuery = db('categories').where({ id });
+    if (req.tenantId) categoryQuery.where({ tenant_id: req.tenantId });
+    const [category] = await categoryQuery
+      .update({ image_url: imageUrl, updated_at: db.fn.now() })
+      .returning('*');
+
+    if (!category) return res.status(404).json({ message: 'Category not found' });
+    return res.json({ message: 'Category image updated successfully', category });
+  } catch (err) {
+    logger.error('Failed to update category image:', err);
+    return res.status(500).json({ message: 'Failed to update category image' });
+  }
+};
+
 export const deleteCategory = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const deletedCount = await db('categories').where({ id }).del();
+    let query = db('categories').where({ id });
+    if (req.tenantId) query = query.where({ tenant_id: req.tenantId });
+    const deletedCount = await query.del();
     if (!deletedCount) {
       return res.status(404).json({ message: 'Category not found' });
     }

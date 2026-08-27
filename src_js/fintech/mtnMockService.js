@@ -1,15 +1,24 @@
 import crypto from 'crypto';
 import ledgerService from './ledgerService.js';
+import { recordMerchantPaymentAllocation } from './merchantSettlementService.js';
 import db from '../../config/db.js';
 
 // Default to local in-process mock gateway mounted on the same server
 const MOCK_GATEWAY = process.env.MTN_MOCK_GATEWAY || 'http://localhost:3000/mock-mtn';
 const WEBHOOK_SECRET = process.env.MTN_WEBHOOK_SECRET || 'change_me_in_prod';
+const PROVIDER_FEE_PERCENT = Number(process.env.PAYMENT_PROVIDER_FEE_PERCENT || 0);
 
 class MtnMockService {
-  async initiateCollection(tenantId, mobile, amountCents, externalRef) {
-    const inserted = await db('orders').insert({ tenant_id: tenantId, total_amount: amountCents / 100.0, status: 'INITIATED', external_ref: externalRef }).returning('id');
-    const orderId = Array.isArray(inserted) ? (inserted[0].id || inserted[0]) : inserted;
+  async initiateCollection(tenantId, mobile, amountCents, externalRef, orderId = null) {
+    let resolvedOrderId = orderId;
+    if (resolvedOrderId) {
+      const existingOrder = await db('orders').where({ id: resolvedOrderId, tenant_id: tenantId }).first();
+      if (!existingOrder) throw new Error('Order not found for tenant');
+      await db('orders').where({ id: resolvedOrderId }).update({ external_ref: externalRef, status: 'INITIATED' });
+    } else {
+      const inserted = await db('orders').insert({ tenant_id: tenantId, total_amount: amountCents / 100.0, status: 'INITIATED', external_ref: externalRef }).returning('id');
+      resolvedOrderId = Array.isArray(inserted) ? (inserted[0].id || inserted[0]) : inserted;
+    }
 
     const payload = { mobile, amountCents, externalRef };
     const controller = new AbortController();
@@ -24,18 +33,18 @@ class MtnMockService {
       });
       clearTimeout(timeout);
       if (!resp.ok) {
-        await db('orders').where({ id: orderId }).update({ status: 'FAILED' });
+        await db('orders').where({ id: resolvedOrderId }).update({ status: 'FAILED' });
         return { status: 'gateway_error', statusCode: resp.status };
       }
       const data = await resp.json();
-      return { status: 'initiated', providerRef: data.requestId || null, orderId };
+      return { status: 'initiated', providerRef: data.requestId || null, orderId: resolvedOrderId };
     } catch (err) {
       clearTimeout(timeout);
       if (err.name === 'AbortError') {
-        await db('orders').where({ id: orderId }).update({ status: 'PENDING' });
+        await db('orders').where({ id: resolvedOrderId }).update({ status: 'PENDING' });
         return { status: 'timeout', message: 'USSD push timed out; awaiting webhook' };
       }
-      await db('orders').where({ id: orderId }).update({ status: 'FAILED' });
+      await db('orders').where({ id: resolvedOrderId }).update({ status: 'FAILED' });
       return { status: 'error', error: String(err) };
     }
   }
@@ -51,18 +60,59 @@ class MtnMockService {
 
     if (status === 'SUCCESSFUL') {
       const order = await db('orders').where({ external_ref: externalRef }).first();
-      if (order) await db('orders').where({ id: order.id }).update({ status: 'PAID' });
+      if (order) {
+        // If tenantId provided in webhook, ensure it matches order tenant
+        if (tenantId && String(order.tenant_id) !== String(tenantId)) {
+          // Log mismatch and skip updating order status to avoid cross-tenant updates
+          console.warn('Webhook tenantId mismatch for externalRef', externalRef);
+        } else {
+          await db('orders').where({ id: order.id }).update({ status: 'PAID' });
+        }
+      }
       const r = await ledgerService.handlePaymentConfirmation({ externalRef, tenantId: tenantId || (order && order.tenant_id) || '', amountCents });
+
+      if (order && r.status !== 'error') {
+        const merchantStore = await db('merchant_stores')
+          .where({ tenant_id: order.tenant_id })
+          .first();
+        if (merchantStore) {
+          const grossAmount = Number(amountCents || Math.round(Number(order.total_amount || 0) * 100)) / 100;
+          const providerFee = grossAmount * (PROVIDER_FEE_PERCENT / 100);
+          const commission = grossAmount * (ledgerService.platformFeePercent || 0);
+          await recordMerchantPaymentAllocation(db, {
+            merchantId: merchantStore.merchant_id,
+            tenantId: order.tenant_id,
+            orderId: order.id,
+            grossCustomerPayment: grossAmount,
+            paymentProviderFee: providerFee,
+            shoplyCommission: commission,
+          });
+        }
+      }
+
       return r;
     }
 
     if (status === 'FAILED') {
-      await db('orders').where({ external_ref: externalRef }).update({ status: 'FAILED' });
-      await db('transactions').where({ external_ref: externalRef }).update({ status: 'FAILED' });
+      const order = await db('orders').where({ external_ref: externalRef }).first();
+      if (order) {
+        if (!tenantId || String(order.tenant_id) === String(tenantId)) {
+          await db('orders').where({ id: order.id }).update({ status: 'FAILED' });
+          await db('transactions').where({ external_ref: externalRef }).update({ status: 'FAILED' });
+        } else {
+          console.warn('Webhook tenantId mismatch for externalRef (FAILED)', externalRef);
+        }
+      }
       return { status: 'marked_failed' };
     }
-
-    await db('orders').where({ external_ref: externalRef }).update({ status: 'PENDING' });
+    const order = await db('orders').where({ external_ref: externalRef }).first();
+    if (order) {
+      if (!tenantId || String(order.tenant_id) === String(tenantId)) {
+        await db('orders').where({ id: order.id }).update({ status: 'PENDING' });
+      } else {
+        console.warn('Webhook tenantId mismatch for externalRef (PENDING)', externalRef);
+      }
+    }
     return { status: 'pending' };
   }
 }

@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { authorize, normalizeRole } from './auth.js';
 
 describe('Role-based app access', () => {
